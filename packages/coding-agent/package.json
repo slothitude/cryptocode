@@ -14,13 +14,13 @@
   "dependencies": {
     "@cryptocode/otp-core": "*",
     "@cryptocode/otp-gate": "*",
-    "@cryptocode/otp-wire": "*"
+    "@cryptocode/otp-wire": "*",
+    "@mariozechner/pi-coding-agent": ">=0.1.0",
+    "@mariozechner/pi-ai": ">=0.1.0"
   },
   "peerDependencies": {
     "@mariozechner/pi-agent": ">=0.1.0",
-    "@mariozechner/pi-ai": ">=0.1.0",
-    "@mariozechner/pi-tui": ">=0.1.0",
-    "@mariozechner/pi-coding-agent": ">=0.1.0"
+    "@mariozechner/pi-tui": ">=0.1.0"
   },
   "license": "MIT"
 }

@@ -3,7 +3,7 @@
  *
  * 1. Restores or creates a DualChannel from session state
  * 2. Creates a WireServer on the given port
- * 3. On USER_INSTRUCTION: decrypt → convertToLlmMessage → forward to LLM
+ * 3. On USER_INSTRUCTION: decrypt → convertToLlmMessage → forward to AgentSession
  * 4. On agent events: serialize → encrypt → send as AGENT_EVENT frame
  * 5. Saves session state after each turn
  */
@@ -18,16 +18,8 @@ export interface AgentServerOptions {
 	port: number;
 	/** Security mode (default: lenient). */
 	securityMode?: SecurityMode;
-	/** Optional event source (AgentSession or mock). If not provided, echoes back. */
-	eventSource?: AgentEventSource;
-}
-
-/** Abstraction over pi-mono AgentSession for testability. */
-export interface AgentEventSource {
-	/** Subscribe to agent events. Returns unsubscribe function. */
-	subscribe(fn: (event: Record<string, unknown>) => void): () => void;
-	/** Send a prompt to the agent. */
-	prompt(text: string): Promise<void>;
+	/** Use echo mode instead of real AgentSession (for testing without API key). */
+	echo?: boolean;
 }
 
 export async function startAgentServer(options: AgentServerOptions): Promise<WireServer> {
@@ -35,6 +27,35 @@ export async function startAgentServer(options: AgentServerOptions): Promise<Wir
 
 	// Restore session
 	const { channel } = await restoreSession();
+
+	// Create real agent session unless echo mode.
+	// Dynamic import required: pi-coding-agent is ESM, this file is CJS.
+	let agentSession: {
+		prompt(text: string): Promise<void>;
+		subscribe(listener: (event: { type: string }) => void): () => void;
+		readonly systemPrompt: string;
+		readonly agent: { state: { systemPrompt: string } };
+	} | null = null;
+
+	if (!options.echo) {
+		try {
+			const { createAgentSession } = await import("@mariozechner/pi-coding-agent");
+			const { session } = await createAgentSession();
+			agentSession = session;
+
+			// Append OTP system prompt addon via mutable agent state
+			session.agent.state.systemPrompt =
+				session.systemPrompt + "\n\n" + OTP_SYSTEM_PROMPT_ADDON;
+
+			console.log("Agent session created with OTP system prompt");
+		} catch (err) {
+			console.error(
+				"Failed to create agent session, falling back to echo mode:",
+				err instanceof Error ? err.message : err,
+			);
+			agentSession = null;
+		}
+	}
 
 	const server = new WireServer({
 		port: options.port,
@@ -47,8 +68,8 @@ export async function startAgentServer(options: AgentServerOptions): Promise<Wir
 				return;
 			}
 
-			if (options.eventSource) {
-				await options.eventSource.prompt(llmMessage);
+			if (agentSession) {
+				await agentSession.prompt(llmMessage);
 			} else {
 				// Echo mode — send back the decrypted text as agent events
 				await server.sendAgentEvent({ type: "turn_start" });
@@ -70,27 +91,37 @@ export async function startAgentServer(options: AgentServerOptions): Promise<Wir
 					toolResults: [],
 				});
 				await server.sendAgentEvent({ type: "agent_end", messages: [] });
-			}
 
-			// Save session state after each turn
-			saveSession({
-				version: 1,
-				channels: {
-					userToAgent: channel["userToAgent"].toState(),
-					agentToUser: channel["agentToUser"].toState(),
-				},
-				createdAt: new Date().toISOString(),
-			});
+				// Save session state after each echo turn
+				saveSession({
+					version: 1,
+					channels: {
+						userToAgent: channel["userToAgent"].toState(),
+						agentToUser: channel["agentToUser"].toState(),
+					},
+					createdAt: new Date().toISOString(),
+				});
+			}
 		},
 	});
 
-	// If an event source is provided, wire up its events to the server
-	if (options.eventSource) {
-		options.eventSource.subscribe(async (event) => {
-			try {
-				await server.sendAgentEvent(event);
-			} catch {
-				// Server may not be ready yet or client disconnected
+	// Subscribe to agent events and forward through wire protocol
+	if (agentSession) {
+		agentSession.subscribe((event) => {
+			server.sendAgentEvent(event as Record<string, unknown>).catch(() => {
+				// Client may have disconnected
+			});
+
+			// Save session state after each full agent turn
+			if (event.type === "agent_end") {
+				saveSession({
+					version: 1,
+					channels: {
+						userToAgent: channel["userToAgent"].toState(),
+						agentToUser: channel["agentToUser"].toState(),
+					},
+					createdAt: new Date().toISOString(),
+				});
 			}
 		});
 	}

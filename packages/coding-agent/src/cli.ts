@@ -144,9 +144,11 @@ async function main(): Promise<void> {
 				console.error(`Invalid mode: ${mode}. Use strict, lenient, or audit.`);
 				process.exit(1);
 			}
+			const echo = args.echo === "true";
 			const server = await startAgentServer({
 				port,
 				securityMode: mode as "strict" | "lenient" | "audit",
+				echo,
 			});
 			console.log(`Agent server listening on port ${port}`);
 			console.log("Waiting for TUI client to connect...");
@@ -192,8 +194,9 @@ Usage:
   cryptocode start [--mode strict|lenient|audit]
     Start the interactive coding agent (two-process: agent + TUI).
 
-  cryptocode agent --port PORT [--mode strict|lenient|audit]
+  cryptocode agent --port PORT [--mode strict|lenient|audit] [--echo]
     Start the agent server (headless daemon with LLM access).
+    Use --echo for echo mode (no API key required, for testing).
 
   cryptocode tui --agent ws://HOST:PORT
     Start the TUI client (user-facing terminal interface).
@@ -205,6 +208,7 @@ Options:
   --remote-public-key HEX     Other party's ECDH public key
   --mode MODE                 Security mode: strict, lenient (default), or audit
   --port PORT                 Port for agent server (default: 9876)
+  --echo                      Use echo mode (no API key required, for testing)
   --agent URL                 WebSocket URL of agent for TUI client
 `);
 	}
