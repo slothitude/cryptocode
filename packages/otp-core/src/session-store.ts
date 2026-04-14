@@ -27,6 +27,11 @@ export function getSessionFilePath(): string {
 	return path.join(getConfigDir(), "session.json");
 }
 
+/** Get the encrypted session file path. */
+export function getEncryptedSessionFilePath(): string {
+	return path.join(getConfigDir(), "session.enc");
+}
+
 /** Ensure the config directory exists. */
 function ensureConfigDir(): void {
 	const dir = getConfigDir();
@@ -58,15 +63,24 @@ export function loadSession(): SessionState {
 	return state;
 }
 
-/** Check if a session already exists. */
+/** Check if a session already exists (plaintext or encrypted). */
 export function sessionExists(): boolean {
-	return fs.existsSync(getSessionFilePath());
+	return fs.existsSync(getSessionFilePath()) || fs.existsSync(getEncryptedSessionFilePath());
 }
 
-/** Delete the session file. */
+/** Check if an encrypted session exists. */
+export function encryptedSessionExists(): boolean {
+	return fs.existsSync(getEncryptedSessionFilePath());
+}
+
+/** Delete all session files (plaintext and encrypted). */
 export function deleteSession(): void {
-	const filePath = getSessionFilePath();
-	if (fs.existsSync(filePath)) {
-		fs.unlinkSync(filePath);
+	const jsonPath = getSessionFilePath();
+	const encPath = getEncryptedSessionFilePath();
+	if (fs.existsSync(jsonPath)) {
+		fs.unlinkSync(jsonPath);
+	}
+	if (fs.existsSync(encPath)) {
+		fs.unlinkSync(encPath);
 	}
 }

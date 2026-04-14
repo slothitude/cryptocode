@@ -19,9 +19,11 @@ export {
 	saveSession,
 	loadSession,
 	sessionExists,
+	encryptedSessionExists,
 	deleteSession,
 	getConfigDir,
 	getSessionFilePath,
+	getEncryptedSessionFilePath,
 	setConfigDirOverride,
 } from "./session-store.js";
 export {

@@ -286,4 +286,173 @@ describe("desync recovery (spec Phase 3 — chuck a wobbly)", () => {
 			assert.ok(!receiver.shouldAutoResyncUA(), "Only 1 failure");
 		});
 	});
+
+	describe("replay attack rejection", () => {
+		it("should reject a replayed message with an old sequence number", async () => {
+			const { sender, receiver } = createPairedChannels(10_000, 10_000);
+
+			// Encrypt a message at seq 0
+			const msg0 = await sender.encryptUserMessage("secret");
+			assert.strictEqual(msg0.sequence, 0);
+
+			// Process it normally
+			const result0 = await receiver.decryptUserMessage(msg0);
+			assert.strictEqual(result0.authenticated, true);
+			assert.strictEqual(result0.instruction, "secret");
+			assert.strictEqual(receiver.userToAgent.getSequence(), 1);
+
+			// Advance both sides through several more messages
+			for (let i = 0; i < 5; i++) {
+				const msg = await sender.encryptUserMessage(`msg${i}`);
+				const res = await receiver.decryptUserMessage(msg);
+				assert.strictEqual(res.authenticated, true);
+			}
+			assert.strictEqual(receiver.userToAgent.getSequence(), 6);
+
+			// Attacker replays msg0 (seq 0) — should be rejected
+			const replayResult = await receiver.decryptUserMessage(msg0);
+			assert.strictEqual(replayResult.authenticated, false, "Replayed message must be rejected");
+			assert.ok(replayResult.dsync, "Should have desync info");
+			assert.strictEqual(replayResult.dsync.senderSeq, 0, "Replayed seq");
+			assert.strictEqual(replayResult.dsync.receiverSeq, 6, "Expected seq");
+		});
+
+		it("should reject a replayed message even if it was the last valid one", async () => {
+			const { sender, receiver } = createPairedChannels(10_000, 10_000);
+
+			// Exchange one message
+			const msg = await sender.encryptUserMessage("only msg");
+			const result = await receiver.decryptUserMessage(msg);
+			assert.strictEqual(result.authenticated, true);
+			assert.strictEqual(receiver.userToAgent.getSequence(), 1);
+
+			// Replay the exact same ciphertext
+			const replay = await receiver.decryptUserMessage(msg);
+			assert.strictEqual(replay.authenticated, false, "Even immediate replay must be rejected");
+			assert.ok(replay.dsync);
+			assert.strictEqual(replay.dsync.senderSeq, 0);
+			assert.strictEqual(replay.dsync.receiverSeq, 1);
+		});
+
+		it("should reject replay on A→U channel too", async () => {
+			const { sender, receiver } = createPairedChannels(10_000, 10_000);
+
+			// Agent sends a response
+			const resp0 = await sender.encryptAgentResponse("agent says hi");
+			assert.strictEqual(resp0.sequence, 0);
+
+			// User decrypts
+			const dec0 = await receiver.decryptAgentResponse(resp0);
+			assert.strictEqual(dec0.authenticated, true);
+			assert.strictEqual(receiver.agentToUser.getSequence(), 1);
+
+			// More responses
+			const resp1 = await sender.encryptAgentResponse("next");
+			await receiver.decryptAgentResponse(resp1);
+			assert.strictEqual(receiver.agentToUser.getSequence(), 2);
+
+			// Replay the first response
+			const replay = await receiver.decryptAgentResponse(resp0);
+			assert.strictEqual(replay.authenticated, false);
+			assert.ok(replay.dsync);
+			assert.strictEqual(replay.dsync.senderSeq, 0);
+			assert.strictEqual(replay.dsync.receiverSeq, 2);
+		});
+
+		it("should count replays toward auto-recovery threshold", async () => {
+			const { sender, receiver } = createPairedChannels(10_000, 10_000);
+
+			// Encrypt one message and deliver it
+			const msg = await sender.encryptUserMessage("original");
+			await receiver.decryptUserMessage(msg);
+
+			// Now replay it 3 times
+			await receiver.decryptUserMessage(msg);
+			assert.ok(!receiver.shouldAutoResyncUA(), "1 failure");
+
+			await receiver.decryptUserMessage(msg);
+			assert.ok(!receiver.shouldAutoResyncUA(), "2 failures");
+
+			await receiver.decryptUserMessage(msg);
+			assert.ok(receiver.shouldAutoResyncUA(), "3 failures → auto-resync");
+		});
+	});
+
+	describe("CDN drift — different bytes on re-fetch", () => {
+		it("should fail to authenticate when resync fetches different bytes", async () => {
+			// Simulate: both sides agree on recovery URL, but re-fetch
+			// yields different bytes (CDN cache miss, content drift, etc.)
+			const recoveryUrlA = "test://recovery-page";
+			const recoveryUrlB = "test://recovery-page"; // Same URL
+
+			// Different byte content from the "same" URL
+			const bufA = Buffer.alloc(10_000);
+			const bufB = Buffer.alloc(10_000);
+			for (let i = 0; i < 10_000; i++) {
+				bufA[i] = (i * 37 + 17) & 0xff;  // Version A
+				bufB[i] = (i * 53 + 29) & 0xff;  // Version B (CDN drift)
+			}
+
+			// Both sides "re-fetched" the same URL but got different content
+			const senderChannel = new DualChannel(
+				new PadManager(recoveryUrlA, Buffer.from(bufA)),
+				new PadManager(recoveryUrlA, Buffer.alloc(10_000)),
+			);
+			const receiverChannel = new DualChannel(
+				new PadManager(recoveryUrlB, Buffer.from(bufB)),
+				new PadManager(recoveryUrlB, Buffer.alloc(10_000)),
+			);
+
+			// Sender encrypts with version A pad
+			const msg = await senderChannel.encryptUserMessage("after drift");
+			// Receiver tries to decrypt with version B pad → fails
+			const result = await receiverChannel.decryptUserMessage(msg);
+
+			assert.strictEqual(result.authenticated, false,
+				"Message must fail when pad bytes diverge due to CDN drift");
+		});
+
+		it("should authenticate when re-fetch yields identical bytes (happy path)", async () => {
+			// Simulate: re-fetch returns the exact same bytes (cache hit)
+			const buf = Buffer.alloc(10_000);
+			for (let i = 0; i < 10_000; i++) buf[i] = (i * 37 + 17) & 0xff;
+
+			const senderChannel = new DualChannel(
+				new PadManager("test://cached", Buffer.from(buf)),
+				new PadManager("test://cached", Buffer.alloc(10_000)),
+			);
+			const receiverChannel = new DualChannel(
+				new PadManager("test://cached", Buffer.from(buf)), // Same bytes
+				new PadManager("test://cached", Buffer.alloc(10_000)),
+			);
+
+			const msg = await senderChannel.encryptUserMessage("cache hit");
+			const result = await receiverChannel.decryptUserMessage(msg);
+
+			assert.strictEqual(result.authenticated, true);
+			assert.strictEqual(result.instruction, "cache hit");
+		});
+
+		it("should trigger auto-resync again if CDN drift causes post-recovery failures", async () => {
+			// First recovery fails due to drift → auto-resync triggers again
+			// Second recovery with a stable URL succeeds
+			const { sender, receiver } = createPairedChannels(10_000, 10_000);
+
+			// Set a stable recovery anchor
+			const anchorMsg = await sender.encryptUserMessage("anchor", "test://stable-page");
+			await receiver.decryptUserMessage(anchorMsg);
+
+			// Force desync
+			await receiver.userToAgent.advance(200);
+
+			// Send messages that fail, incrementing failure counter
+			for (let i = 0; i < 3; i++) {
+				const failMsg = await sender.encryptUserMessage(`fail${i}`);
+				await receiver.decryptUserMessage(failMsg);
+			}
+
+			assert.ok(receiver.shouldAutoResyncUA(),
+				"Auto-resync should trigger after 3 failures from drift");
+		});
+	});
 });

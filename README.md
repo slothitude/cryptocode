@@ -76,9 +76,10 @@ When the pad buffer drops below a threshold (default: 10KB), the next message in
 ### Why Wikipedia?
 
 - **Large pages**: 50KB–2MB+ of raw HTML bytes per article
-- **Stable**: Content is versioned and tracked
 - **Always available**: No API keys needed, just HTTP GET
 - **High entropy**: Raw HTML contains a rich mix of ASCII, Unicode, markup, and structured data
+
+**Important caveat**: Wikipedia article *content* is versioned and stable, but the raw HTML byte stream is **not** guaranteed to be identical across fetches. CDN edges may serve different cached versions, banners and scripts vary, and the HTTP response body can differ between requests. This is fine during normal operation (both sides fetch once and advance in lockstep), but it matters during desync recovery — if both sides re-fetch the same URL and get different bytes, messages will fail authentication and the system will trigger another recovery cycle. The wobbly mechanism is the mitigation, not Wikipedia's stability.
 
 ### Dual Channels
 
@@ -130,7 +131,7 @@ If messages are lost, reordered, or corrupted, pad positions diverge between sen
 
 ### Detection
 
-Every encrypted message includes a **sequence number** (monotonically increasing). The receiver tracks its expected sequence. If the sender's sequence doesn't match, the message is rejected as desynchronized.
+Every encrypted message includes a **sequence number** (monotonically increasing). The receiver tracks its expected sequence. If the sender's sequence doesn't match, the message is rejected as desynchronized. This also prevents **replay attacks** — re-sending a previously valid ciphertext fails because its sequence number is now stale.
 
 Each successful decryption with an embedded `nextUrl` updates the receiver's **`lastSuccessfulUrl`** — a recovery anchor known to both sides without extra communication.
 
@@ -208,6 +209,12 @@ cryptocode/
 
 ---
 
+## Requirements
+
+- **Node.js 18+** (no external dependencies; CRC32 is pure-JS, crypto uses built-in `node:crypto`)
+
+---
+
 ## Installation
 
 ```bash
@@ -228,10 +235,9 @@ npm run build
 | `@mariozechner/pi-ai` | LLM streaming, Message types (peer dep) |
 | `@mariozechner/pi-tui` | Terminal UI components (peer dep) |
 | `node:crypto` | ECDH, AES-256-GCM, SHA-256 hashing |
-| `node:zlib` | CRC32 checksums for envelope validation |
 | `node:https` / `node:http` | Fetching pad material from URLs |
 
-No external crypto libraries needed — the OTP cipher is XOR, and handshake/session encryption uses Node.js built-in crypto.
+No external crypto libraries needed — the OTP cipher is XOR, CRC32 is a pure-JS table lookup (no `node:zlib` dependency), and handshake/session encryption uses Node.js built-in crypto.
 
 ---
 
@@ -343,7 +349,7 @@ Encrypt/decrypt the full session state with AES-256-GCM.
 Encrypt/decrypt a seed URL as a base64-encoded AES-256-GCM blob.
 
 #### `saveSession(state)` / `loadSession()` / `sessionExists()` / `deleteSession()`
-Persist and restore session state to `~/.cryptocode/session.json`.
+Persist and restore session state. `sessionExists()` checks for both `session.json` and `session.enc`. `deleteSession()` removes both files.
 
 ### `@cryptocode/otp-gate`
 
@@ -360,7 +366,21 @@ Converts a decrypted result into an LLM-consumable message based on the security
 
 ## Session State
 
-**Without handshake** — stored at `~/.cryptocode/session.json`:
+Sessions are stored in `~/.cryptocode/`. The file format depends on whether the ECDH handshake was used:
+
+| Mode | File | Contents |
+|------|------|----------|
+| No handshake | `session.json` | Plaintext JSON (readable) |
+| With handshake | `session.enc` | AES-256-GCM encrypted blob (unreadable without key) |
+
+### Transitioning Between Modes
+
+- `cryptocode delete` removes **both** `session.json` and `session.enc` if present
+- `cryptocode init` without keys requires that no session (either file) exists — delete first
+- `cryptocode init` with keys writes `session.enc`; if a plaintext `session.json` exists, delete it first
+- `cryptocode session` shows the plaintext session state, or reports that the session is encrypted
+
+### Plaintext Session Structure
 
 ```json
 {
@@ -456,26 +476,28 @@ node --import tsx --test packages/otp-gate/tests/dual-channel.test.ts
 node --import tsx --test packages/otp-gate/tests/desync-recovery.test.ts
 ```
 
-**90 tests passing** across both packages:
+**97 tests passing** across both packages:
 
 | Suite | Tests | Coverage |
 |-------|-------|----------|
-| `otp-cipher` | 24 | XOR roundtrip, envelope format, validation, parsing, CRC32 rejection |
+| `otp-cipher` | 24 | XOR roundtrip, envelope format, validation, parsing, CRC32 rejection (pure-JS CRC32) |
 | `pad-chain` | 7 | Envelope encode/decode, UTF-8, corruption detection |
 | `pad-manager` | 6 | Position tracking, exhaustion, discard, serialization |
 | `session-store` | 5 | Save/load/delete, version check, test isolation |
 | `chain-transition` | 7 | Rapid sequences, boundary exhaustion, sequence through discard |
 | `handshake` | 17 | ECDH keygen, shared key derivation, AES-256-GCM encrypt/decrypt, session encryption at rest, seed URL encryption |
 | `dual-channel` | 6 | Full encrypt/decrypt flow, injection rejection, LLM message conversion |
-| `desync-recovery` | 14 | Sequence tracking, lastSuccessfulUrl, desync detection, recovery, auto-recovery threshold |
+| `desync-recovery` | 21 | Sequence tracking, lastSuccessfulUrl, desync detection, recovery, auto-recovery, **replay attack rejection** (4 tests), **CDN drift** (3 tests) |
 
 ---
 
 ## Limitations & Future Work
 
+- **CDN byte drift**: Wikipedia HTML is not byte-stable across fetches. Normal operation is unaffected (both sides fetch once), but desync recovery may fail if the re-fetched page differs. The system handles this by triggering another recovery cycle, but recovery is not guaranteed on the first attempt.
 - **pi-mono integration**: The `OTPSession` wrapper is designed to wrap pi-mono's `AgentSession.prompt()` — currently uses a demonstration loop.
 - **TUI integration**: Phase 4 (status bar showing pad remaining, green/red OTP indicators) is designed but not yet implemented.
 - **Performance**: XOR is O(n) — negligible for typical message sizes. Pad fetching adds network latency when refilling (~1s per Wikipedia page). ECDH handshake is a one-time cost at session init.
+- **Session migration**: There is no migration path from `session.json` to `session.enc`. To switch, delete the existing session and reinitialize with keys.
 
 ---
 

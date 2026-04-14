@@ -19,6 +19,7 @@
 import { startCryptocode } from "./main.js";
 import {
 	sessionExists,
+	encryptedSessionExists,
 	loadSession,
 	deleteSession,
 } from "@cryptocode/otp-core";
@@ -86,13 +87,17 @@ async function main(): Promise<void> {
 		}
 
 		case "session": {
-			if (!sessionExists()) {
+			if (encryptedSessionExists()) {
+				console.log("Encrypted session exists (session.enc).");
+				console.log("Use --private-key and --remote-public-key with 'cryptocode start' to decrypt.");
+			} else if (sessionExists() && !encryptedSessionExists()) {
+				const state = loadSession();
+				console.log("Session state:");
+				console.log(JSON.stringify(state, null, 2));
+			} else {
 				console.log("No active session. Run 'cryptocode init' first.");
 				process.exit(1);
 			}
-			const state = loadSession();
-			console.log("Session state:");
-			console.log(JSON.stringify(state, null, 2));
 			break;
 		}
 

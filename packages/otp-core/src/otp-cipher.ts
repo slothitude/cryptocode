@@ -10,13 +10,31 @@
  * that fails at the version byte with overwhelming probability.
  */
 
-import { crc32 } from "node:zlib";
-
 /** Protocol version byte. */
 export const PROTOCOL_VERSION = 0x01;
 
 /** Fixed separator between instruction and next URL. 4 bytes per spec. */
 const SEPARATOR = Buffer.from([0xde, 0xad, 0xbe, 0xef]);
+
+/**
+ * Pure-JS CRC32 using the standard polynomial (0xEDB88320).
+ * No dependency on node:zlib — works on Node 18+.
+ */
+const CRC32_TABLE = new Uint32Array(256);
+for (let i = 0; i < 256; i++) {
+	let c = i;
+	for (let j = 0; j < 8; j++) {
+		c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1;
+	}
+	CRC32_TABLE[i] = c;
+}
+function crc32(data: Buffer): number {
+	let crc = 0xffffffff;
+	for (let i = 0; i < data.length; i++) {
+		crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ data[i]) & 0xff];
+	}
+	return (crc ^ 0xffffffff) >>> 0;
+}
 
 /** Byte offset of each envelope field. */
 const OFFSET_VERSION = 0;
