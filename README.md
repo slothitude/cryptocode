@@ -150,25 +150,81 @@ Auto-recovery triggers after **3 consecutive** decryption failures.
 
 ## Architecture
 
+Cryptocode runs as **two separate processes** communicating over an encrypted WebSocket:
+
 ```
-User types message
-    │
-    ▼
-[BUILD ENVELOPE] ── [version][length][CRC32][instruction][sep?][nextUrl?]
-    │
-    ▼
-[OTP ENCRYPT] ── XOR with Pad_UA bytes at current position
-    │
-    ▼
-Ciphertext transmitted to agent
-    │
-    ▼
-[OTP DECRYPT] ── XOR with same Pad_UA bytes → recover plaintext
-    │
-    ├── Valid version + CRC32 + UTF-8 ──► [AUTHENTICATED] → LLM acts on it
-    │
-    └── Invalid version / CRC32 / UTF-8 ──► [UNAUTHENTICATED] → rejected
+┌─────────────────────┐                      ┌─────────────────────────────┐
+│   TUI Process        │                      │   Agent Process              │
+│   (user-facing)      │                      │   (headless, LLM access)     │
+│                      │                      │                             │
+│  User types message  │                      │                             │
+│         │            │                      │                             │
+│         ▼            │                      │                             │
+│  [BUILD ENVELOPE]    │                      │                             │
+│         │            │                      │                             │
+│         ▼            │                      │                             │
+│  [OTP ENCRYPT]       │                      │                             │
+│  XOR with Pad_UA     │                      │                             │
+│         │            │                      │                             │
+│         ▼            │  USER_INSTRUCTION    │         ▼                   │
+│  [WireClient] ───────┼─── encrypted frame ──► [WireServer]               │
+│         │            │       (0x01)         │         │                   │
+│         │            │                      │         ▼                   │
+│         │            │                      │  [OTP DECRYPT]              │
+│         │            │                      │  XOR with Pad_UA            │
+│         │            │                      │         │                   │
+│         │            │                      │  Valid?──►[AUTHENTICATED]   │
+│         │            │                      │         │       │           │
+│         │            │                      │  Invalid─►[REJECTED]       │
+│         │            │                      │                 │           │
+│         │            │                      │         ▼       ▼           │
+│         │            │                      │  convertToLlmMessage()      │
+│         │            │                      │         │                   │
+│         │            │                      │         ▼                   │
+│         │            │                      │  AgentSession.prompt()      │
+│         │            │                      │         │                   │
+│         │            │                      │         ▼                   │
+│         │            │     AGENT_EVENT      │  Subscribe to events        │
+│         │            │◄──── encrypted ──────┼── each event encrypted     │
+│         ▼            │      frames (0x02)   │                             │
+│  [OTP DECRYPT]       │                      │                             │
+│  XOR with Pad_AU     │                      │                             │
+│         │            │                      │                             │
+│         ▼            │                      │                             │
+│  Display to user     │                      │  Save session state         │
+│  (streaming text,    │                      │                             │
+│   tool calls, etc.)  │                      │                             │
+└─────────────────────┘                      └─────────────────────────────┘
 ```
+
+### Wire Protocol
+
+Binary WebSocket frames:
+
+```
+[type:1B][sequence:4B BE][length:4B BE][payload:NB]
+```
+
+| Frame type | Value | Direction | Content |
+|---|---|---|---|
+| `USER_INSTRUCTION` | `0x01` | TUI → Agent | Encrypted user message |
+| `AGENT_EVENT` | `0x02` | Agent → TUI | Encrypted streaming event |
+| `CONTROL` | `0x03` | Both | Plaintext JSON (handshake, resync, ping) |
+
+Each encrypted payload contains: `[padBytesUsed:4B][padPosition:4B][otpSequence:4B][ciphertext:remaining]`
+
+Agent responses use **per-event chunking** — each pi-mono `AgentSessionEvent` is individually encrypted and sent as one binary frame. This ensures every piece of streaming output (text deltas, tool calls, tool results) is authenticated through the OTP.
+
+### Session Negotiation
+
+On connection, both sides perform a handshake:
+
+1. Server sends `HELLO` with a SHA-256 hash of its channel state (position, sequence, URLs)
+2. Client verifies the hash matches its own session
+3. If hashes match, both sides are ready for encrypted communication
+4. If hashes differ, the connection is rejected
+
+Control message types: `HELLO`, `SEED_EXCHANGE`, `RESYNC_REQUEST`, `RESYNC_ACK`, `PING`, `PONG`, `ERROR`, `SHUTDOWN`.
 
 ---
 
@@ -198,10 +254,22 @@ cryptocode/
     │       ├── system-prompt-addon.ts  # OTP rules for LLM system prompt
     │       └── index.ts
     │
+    ├── otp-wire/                   # WebSocket wire protocol (two-process architecture)
+    │   └── src/
+    │       ├── types.ts            # FrameType, WireFrame, ControlMessage, AgentEventEnvelope
+    │       ├── frame-codec.ts      # Binary frame encode/decode, control messages
+    │       ├── agent-event-serializer.ts  # pi-mono event serialization
+    │       ├── ws-server.ts        # WireServer (agent side)
+    │       ├── ws-client.ts        # WireClient (TUI side)
+    │       ├── session-negotiator.ts  # Session handshake (local + remote modes)
+    │       └── index.ts
+    │
     └── coding-agent/               # CLI entry point
         └── src/
-            ├── cli.ts              # cryptocode keygen/init/session/start/delete
-            ├── main.ts             # Startup, load session, interactive loop
+            ├── cli.ts              # cryptocode keygen/init/session/start/agent/tui/delete
+            ├── main.ts             # Two-process launcher (spawns agent + TUI)
+            ├── agent-server.ts     # Agent process: restore session, WireServer, LLM forwarding
+            ├── tui-client.ts       # TUI process: restore session, WireClient, readline UI
             └── core/
                 ├── config.ts       # ~/.cryptocode/ paths and defaults
                 └── session-init.ts # Seed URL setup, ECDH handshake, channel init
@@ -234,6 +302,7 @@ npm run build
 | `@mariozechner/pi-agent` | Agent, AgentLoop, types (peer dep) |
 | `@mariozechner/pi-ai` | LLM streaming, Message types (peer dep) |
 | `@mariozechner/pi-tui` | Terminal UI components (peer dep) |
+| `ws` | WebSocket server/client for two-process communication |
 | `node:crypto` | ECDH, AES-256-GCM, SHA-256 hashing |
 | `node:https` / `node:http` | Fetching pad material from URLs |
 
@@ -275,7 +344,7 @@ This fetches the initial pad material and saves session state to `~/.cryptocode/
 ### 3. Start the Agent
 
 ```bash
-# Default: lenient mode
+# Two-process mode (spawns agent + TUI automatically)
 cryptocode start
 
 # Strict mode: silently drop unauthenticated messages
@@ -283,6 +352,16 @@ cryptocode start --mode strict
 
 # Audit mode: log everything, pass through for analysis
 cryptocode start --mode audit
+```
+
+Or start the processes separately:
+
+```bash
+# Terminal 1: start the agent server
+cryptocode agent --port 9876
+
+# Terminal 2: connect the TUI client
+cryptocode tui --agent ws://localhost:9876
 ```
 
 ### 4. Manage Sessions
@@ -361,6 +440,44 @@ Wraps an agent session with OTP encryption. Processes outgoing and incoming mess
 
 #### `convertToLlmMessage(instruction, authenticated, mode) → string | null`
 Converts a decrypted result into an LLM-consumable message based on the security mode.
+
+### `@cryptocode/otp-wire`
+
+#### `WireServer`
+WebSocket server for the agent process. Wraps a `DualChannel`, decrypts incoming `USER_INSTRUCTION` frames, and provides `sendAgentEvent()` to encrypt and stream events back to the TUI.
+
+```typescript
+const server = new WireServer({
+  port: 9876,
+  channel: dualChannel,
+  onInstruction: (text, authenticated) => { /* forward to LLM */ },
+});
+await server.start();
+await server.sendAgentEvent({ type: "message_update", ... });
+await server.close();
+```
+
+#### `WireClient`
+WebSocket client for the TUI process. Wraps a `DualChannel`, provides `sendUserMessage()` for encrypting and sending instructions, and `onAgentEvent()` for receiving decrypted streaming events.
+
+```typescript
+const client = new WireClient({
+  url: "ws://localhost:9876",
+  channel: dualChannel,
+});
+await client.connect();
+await client.sendUserMessage("hello agent");
+const unsub = client.onAgentEvent((event) => { /* display to user */ });
+```
+
+#### `SessionNegotiator`
+Handles session handshake between server and client. Local mode verifies both sides loaded the same session by comparing SHA-256 hashes of channel state.
+
+#### `encodeFrame(WireFrame) → Buffer` / `decodeFrame(Buffer) → WireFrame | null`
+Encode/decode binary wire frames: `[type:1B][sequence:4B BE][length:4B BE][payload:NB]`.
+
+#### `encodeEncryptedPayload(EncryptedMessage) → Buffer` / `decodeEncryptedPayload(Buffer) → EncryptedMessage`
+Serialize/deserialize encrypted message payloads for wire transport.
 
 ---
 
@@ -462,7 +579,7 @@ This is the information-theoretic security of OTP: without the pad, ciphertext r
 ## Running Tests
 
 ```bash
-# Run all tests across both packages
+# Run all tests across all packages
 npm test
 
 # Run individual test suites
@@ -474,9 +591,12 @@ node --import tsx --test packages/otp-core/tests/chain-transition.test.ts
 node --import tsx --test packages/otp-core/tests/handshake.test.ts
 node --import tsx --test packages/otp-gate/tests/dual-channel.test.ts
 node --import tsx --test packages/otp-gate/tests/desync-recovery.test.ts
+node --import tsx --test packages/otp-wire/tests/frame-codec.test.ts
+node --import tsx --test packages/otp-wire/tests/agent-event-serializer.test.ts
+node --import tsx --test packages/otp-wire/tests/wire-integration.test.ts
 ```
 
-**97 tests passing** across both packages:
+**144 tests passing** across all packages:
 
 | Suite | Tests | Coverage |
 |-------|-------|----------|
@@ -488,14 +608,18 @@ node --import tsx --test packages/otp-gate/tests/desync-recovery.test.ts
 | `handshake` | 17 | ECDH keygen, shared key derivation, AES-256-GCM encrypt/decrypt, session encryption at rest, seed URL encryption |
 | `dual-channel` | 6 | Full encrypt/decrypt flow, injection rejection, LLM message conversion |
 | `desync-recovery` | 21 | Sequence tracking, lastSuccessfulUrl, desync detection, recovery, auto-recovery, **replay attack rejection** (4 tests), **CDN drift** (3 tests) |
+| `frame-codec` | 24 | Binary frame encode/decode, control message serialization, encrypted payload roundtrip |
+| `agent-event-serializer` | 15 | All pi-mono event types, unknown types, nested data, timestamps |
+| `wire-integration` | 8 | WebSocket connect, encrypted message exchange, 20-event streaming, bidirectional roundtrip, hash mismatch rejection |
 
 ---
 
 ## Limitations & Future Work
 
 - **CDN byte drift**: Wikipedia HTML is not byte-stable across fetches. Normal operation is unaffected (both sides fetch once), but desync recovery may fail if the re-fetched page differs. The system handles this by triggering another recovery cycle, but recovery is not guaranteed on the first attempt.
-- **pi-mono integration**: The `OTPSession` wrapper is designed to wrap pi-mono's `AgentSession.prompt()` — currently uses a demonstration loop.
-- **TUI integration**: Phase 4 (status bar showing pad remaining, green/red OTP indicators) is designed but not yet implemented.
+- **pi-mono integration**: The agent server uses echo mode by default. Wiring to a real `AgentSession.prompt()` requires API keys and a configured LLM provider.
+- **TUI**: Currently readline-based. Integration with pi-tui for rich terminal UI (status bar, OTP indicators, streaming display) is future work.
+- **Remote mode**: ECDH seed URL exchange over WebSocket is stubbed but not yet implemented. Currently both processes must share the same filesystem (local mode).
 - **Performance**: XOR is O(n) — negligible for typical message sizes. Pad fetching adds network latency when refilling (~1s per Wikipedia page). ECDH handshake is a one-time cost at session init.
 - **Session migration**: There is no migration path from `session.json` to `session.enc`. To switch, delete the existing session and reinitialize with keys.
 
