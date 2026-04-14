@@ -1,0 +1,20 @@
+{
+  "name": "@cryptocode/otp-gate",
+  "version": "0.1.0",
+  "description": "Agent integration layer — wraps pi-mono AgentSession with OTP encryption",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cryptocode/otp-core": "*"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-agent": ">=0.1.0",
+    "@mariozechner/pi-ai": ">=0.1.0"
+  },
+  "license": "MIT"
+}

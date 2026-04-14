@@ -1,0 +1,13 @@
+{
+  "name": "@cryptocode/otp-core",
+  "version": "0.1.0",
+  "description": "Core OTP engine — encrypt/decrypt, pad management, chain logic",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "license": "MIT"
+}

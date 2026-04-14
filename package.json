@@ -1,0 +1,20 @@
+{
+  "name": "cryptocode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cryptographically secured coding agent using one-time pad encryption",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm workspaces foreach --all run build",
+    "test": "npm workspaces foreach --all run test",
+    "lint": "npm workspaces foreach --all run lint"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}

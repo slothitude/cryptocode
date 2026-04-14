@@ -1,0 +1,25 @@
+{
+  "name": "@cryptocode/coding-agent",
+  "version": "0.1.0",
+  "description": "Cryptocode CLI — cryptographically secured coding agent",
+  "bin": {
+    "cryptocode": "dist/cli.js"
+  },
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cryptocode/otp-core": "*",
+    "@cryptocode/otp-gate": "*"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-agent": ">=0.1.0",
+    "@mariozechner/pi-ai": ">=0.1.0",
+    "@mariozechner/pi-tui": ">=0.1.0",
+    "@mariozechner/pi-coding-agent": ">=0.1.0"
+  },
+  "license": "MIT"
+}
