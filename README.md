@@ -596,7 +596,7 @@ node --import tsx --test packages/otp-wire/tests/agent-event-serializer.test.ts
 node --import tsx --test packages/otp-wire/tests/wire-integration.test.ts
 ```
 
-**144 tests passing** across all packages:
+**148 tests passing** across all packages:
 
 | Suite | Tests | Coverage |
 |-------|-------|----------|
@@ -611,6 +611,7 @@ node --import tsx --test packages/otp-wire/tests/wire-integration.test.ts
 | `frame-codec` | 24 | Binary frame encode/decode, control message serialization, encrypted payload roundtrip |
 | `agent-event-serializer` | 15 | All pi-mono event types, unknown types, nested data, timestamps |
 | `wire-integration` | 8 | WebSocket connect, encrypted message exchange, 20-event streaming, bidirectional roundtrip, hash mismatch rejection |
+| `wobbly-echo` | 4 | Echo roundtrip, desync detection with auto-recovery, full wobbly recovery, desync event emission |
 
 ---
 
