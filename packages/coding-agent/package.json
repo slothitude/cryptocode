@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@cryptocode/otp-core": "*",
-    "@cryptocode/otp-gate": "*"
+    "@cryptocode/otp-gate": "*",
+    "@cryptocode/otp-wire": "*"
   },
   "peerDependencies": {
     "@mariozechner/pi-agent": ">=0.1.0",

@@ -14,9 +14,17 @@
  *     Show current session state.
  *
  *   cryptocode start [--mode strict|lenient|audit]
- *     Start the interactive coding agent.
+ *     Start the interactive coding agent (two-process: agent + TUI).
+ *
+ *   cryptocode agent --port PORT [--mode strict|lenient|audit]
+ *     Start the agent server (headless daemon with LLM access).
+ *
+ *   cryptocode tui --agent ws://HOST:PORT
+ *     Start the TUI client (user-facing terminal interface).
  */
 import { startCryptocode } from "./main.js";
+import { startAgentServer } from "./agent-server.js";
+import { startTuiClient } from "./tui-client.js";
 import {
 	sessionExists,
 	encryptedSessionExists,
@@ -125,6 +133,44 @@ async function main(): Promise<void> {
 			break;
 		}
 
+		case "agent": {
+			const port = parseInt(args.port ?? "9876", 10);
+			if (isNaN(port) || port < 1 || port > 65535) {
+				console.error("Invalid port. Use --port NUMBER (1-65535).");
+				process.exit(1);
+			}
+			const mode = args.mode ?? "lenient";
+			if (!["strict", "lenient", "audit"].includes(mode)) {
+				console.error(`Invalid mode: ${mode}. Use strict, lenient, or audit.`);
+				process.exit(1);
+			}
+			const server = await startAgentServer({
+				port,
+				securityMode: mode as "strict" | "lenient" | "audit",
+			});
+			console.log(`Agent server listening on port ${port}`);
+			console.log("Waiting for TUI client to connect...");
+
+			// Keep alive until shutdown
+			await new Promise<void>((resolve) => {
+				server.on("shutdown", () => resolve());
+				process.on("SIGINT", () => {
+					server.close().then(() => resolve());
+				});
+			});
+			break;
+		}
+
+		case "tui": {
+			const agentUrl = args.agent;
+			if (!agentUrl) {
+				console.error("Missing --agent URL. Usage: cryptocode tui --agent ws://localhost:9876");
+				process.exit(1);
+			}
+			await startTuiClient({ agentUrl });
+			break;
+		}
+
 		default:
 			console.log(`Cryptocode — cryptographically secured coding agent
 
@@ -144,7 +190,13 @@ Usage:
     Delete the current session.
 
   cryptocode start [--mode strict|lenient|audit]
-    Start the interactive coding agent.
+    Start the interactive coding agent (two-process: agent + TUI).
+
+  cryptocode agent --port PORT [--mode strict|lenient|audit]
+    Start the agent server (headless daemon with LLM access).
+
+  cryptocode tui --agent ws://HOST:PORT
+    Start the TUI client (user-facing terminal interface).
 
 Options:
   --user-seed-url URL         Wikipedia URL for U→A channel pad
@@ -152,6 +204,8 @@ Options:
   --private-key HEX           Your ECDH private key (from keygen)
   --remote-public-key HEX     Other party's ECDH public key
   --mode MODE                 Security mode: strict, lenient (default), or audit
+  --port PORT                 Port for agent server (default: 9876)
+  --agent URL                 WebSocket URL of agent for TUI client
 `);
 	}
 }

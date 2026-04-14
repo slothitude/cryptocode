@@ -1,0 +1,21 @@
+{
+  "name": "@cryptocode/otp-wire",
+  "version": "0.1.0",
+  "description": "WebSocket wire protocol for two-process cryptocode architecture",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cryptocode/otp-core": "*",
+    "@cryptocode/otp-gate": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.0"
+  },
+  "license": "MIT"
+}
