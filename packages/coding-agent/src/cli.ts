@@ -3,8 +3,12 @@
  * Cryptocode CLI — cryptographically secured coding agent.
  *
  * Commands:
+ *   cryptocode keygen
+ *     Generate an ECDH keypair for handshake.
+ *
  *   cryptocode init [--user-seed-url URL] [--agent-seed-url URL]
- *     Initialize a new session with seed Wikipedia articles.
+ *                    [--private-key HEX] [--remote-public-key HEX]
+ *     Initialize a new session with optional ECDH handshake.
  *
  *   cryptocode session
  *     Show current session state.
@@ -19,7 +23,7 @@ import {
 	deleteSession,
 } from "@cryptocode/otp-core";
 import { CONFIG } from "./core/config.js";
-import { initSession } from "./core/session-init.js";
+import { initSession, generateHandshakeKeys } from "./core/session-init.js";
 
 function parseArgs(args: string[]): Record<string, string> {
 	const parsed: Record<string, string> = {};
@@ -43,6 +47,16 @@ async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(3));
 
 	switch (command) {
+		case "keygen": {
+			const keys = generateHandshakeKeys();
+			console.log("ECDH keypair generated (secp256k1):");
+			console.log(`  Public key:  ${keys.publicKeyHex}`);
+			console.log(`  Private key: ${keys.privateKeyHex}`);
+			console.log("\nShare your public key with the other party.");
+			console.log("Keep your private key secret.");
+			break;
+		}
+
 		case "init": {
 			const userSeedUrl =
 				args["user-seed-url"] ?? "https://en.wikipedia.org/wiki/Cryptography";
@@ -54,7 +68,19 @@ async function main(): Promise<void> {
 				process.exit(1);
 			}
 
-			await initSession(userSeedUrl, agentSeedUrl);
+			// Optional ECDH handshake
+			const privateKey = args["private-key"];
+			const remotePublicKey = args["remote-public-key"];
+
+			let handshakeKey: { localPrivateKey: string; remotePublicKey: string } | undefined;
+			if (privateKey && remotePublicKey) {
+				handshakeKey = { localPrivateKey: privateKey, remotePublicKey: remotePublicKey };
+			} else if (privateKey || remotePublicKey) {
+				console.error("Both --private-key and --remote-public-key are required for ECDH handshake.");
+				process.exit(1);
+			}
+
+			await initSession(userSeedUrl, agentSeedUrl, handshakeKey);
 			console.log("Session initialized successfully.");
 			break;
 		}
@@ -98,8 +124,13 @@ async function main(): Promise<void> {
 			console.log(`Cryptocode — cryptographically secured coding agent
 
 Usage:
+  cryptocode keygen
+    Generate an ECDH keypair for handshake (secp256k1).
+
   cryptocode init [--user-seed-url URL] [--agent-seed-url URL]
-    Initialize a new session with seed Wikipedia articles.
+                  [--private-key HEX] [--remote-public-key HEX]
+    Initialize a new session. With --private-key and --remote-public-key,
+    performs ECDH handshake and encrypts session at rest.
 
   cryptocode session
     Show current session state.
@@ -111,9 +142,11 @@ Usage:
     Start the interactive coding agent.
 
 Options:
-  --user-seed-url URL    Wikipedia URL for U→A channel pad (default: Cryptography article)
-  --agent-seed-url URL   Wikipedia URL for A→U channel pad (default: One-time_pad article)
-  --mode MODE            Security mode: strict, lenient (default), or audit
+  --user-seed-url URL         Wikipedia URL for U→A channel pad
+  --agent-seed-url URL        Wikipedia URL for A→U channel pad
+  --private-key HEX           Your ECDH private key (from keygen)
+  --remote-public-key HEX     Other party's ECDH public key
+  --mode MODE                 Security mode: strict, lenient (default), or audit
 `);
 	}
 }

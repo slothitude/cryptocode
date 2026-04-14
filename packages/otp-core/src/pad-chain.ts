@@ -1,56 +1,40 @@
 /**
- * The pad chain encodes and decodes messages that carry the next
- * Wikipedia article title inside the encrypted payload.
+ * Pad chain — backward-compatible wrapper around the envelope format.
  *
- * Plaintext format:
- *   [instruction_bytes][SEPARATOR][next_url]
- *
- * The separator is a sequence unlikely to appear in normal instructions.
- * If no nextUrl is provided, only the instruction bytes are sent.
+ * The actual encoding/decoding now lives in otp-cipher.ts (buildEnvelope,
+ * validateEnvelope, parseEnvelope). This module re-exports a PadChain class
+ * that delegates to the envelope functions.
  */
 
-const SEPARATOR = Buffer.from("\x00\x01\x02\x03<<NEXT_URL>>\x03\x02\x01\x00", "utf-8");
+import {
+	buildEnvelope,
+	validateEnvelope,
+	parseEnvelope,
+} from "./otp-cipher.js";
+import type { EnvelopeParseResult } from "./otp-cipher.js";
 
 export class PadChain {
 	/**
-	 * Encode an instruction and optional next URL into a single plaintext buffer.
+	 * Encode an instruction and optional next URL into a full envelope buffer.
 	 */
 	encodeMessage(instruction: string, nextUrl?: string): Buffer {
-		const instructionBuf = Buffer.from(instruction, "utf-8");
-		if (!nextUrl) {
-			return instructionBuf;
-		}
-		const urlBuf = Buffer.from(nextUrl, "utf-8");
-		return Buffer.concat([instructionBuf, SEPARATOR, urlBuf]);
+		return buildEnvelope(instruction, nextUrl);
 	}
 
 	/**
-	 * Decode a decrypted buffer back into instruction + optional next URL.
+	 * Validate an envelope buffer.
 	 */
-	decodeMessage(decrypted: Buffer): { instruction: string; nextUrl?: string } {
-		const sepIndex = findSeparator(decrypted);
-		if (sepIndex === -1) {
-			return { instruction: decrypted.toString("utf-8") };
-		}
-		const instruction = decrypted.subarray(0, sepIndex).toString("utf-8");
-		const urlStart = sepIndex + SEPARATOR.length;
-		const nextUrl = decrypted.subarray(urlStart).toString("utf-8");
-		return { instruction, nextUrl: nextUrl || undefined };
+	validateMessage(data: Buffer): boolean {
+		return validateEnvelope(data);
+	}
+
+	/**
+	 * Decode a validated envelope buffer back into instruction + optional next URL.
+	 */
+	decodeMessage(data: Buffer): { instruction: string; nextUrl?: string } {
+		return parseEnvelope(data);
 	}
 }
 
-/** Find the separator sequence in a buffer. Returns -1 if not found. */
-function findSeparator(buf: Buffer): number {
-	if (buf.length < SEPARATOR.length) return -1;
-	for (let i = 0; i <= buf.length - SEPARATOR.length; i++) {
-		let match = true;
-		for (let j = 0; j < SEPARATOR.length; j++) {
-			if (buf[i + j] !== SEPARATOR[j]) {
-				match = false;
-				break;
-			}
-		}
-		if (match) return i;
-	}
-	return -1;
-}
+// Re-export envelope types for convenience
+export type { EnvelopeParseResult };

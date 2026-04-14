@@ -1,19 +1,40 @@
-import { PadManager, saveSession } from "@cryptocode/otp-core";
+import {
+	PadManager,
+	saveSession,
+	encryptSessionState,
+	decryptSessionState,
+	deriveSharedKey,
+	generateKeyPairHex,
+} from "@cryptocode/otp-core";
 import { DualChannel } from "@cryptocode/otp-gate";
 import type { SessionState } from "@cryptocode/otp-core";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { CONFIG } from "./config.js";
 
 /**
  * Initialize a new cryptocode session with seed URLs for both channels.
- * Fetches the initial pad material and saves session state.
+ * Performs ECDH handshake and encrypts session state at rest.
  */
 export async function initSession(
 	userSeedUrl: string,
 	agentSeedUrl: string,
-): Promise<{ channel: DualChannel; state: SessionState }> {
+	handshakeKey?: { localPrivateKey: string; remotePublicKey: string },
+): Promise<{ channel: DualChannel; state: SessionState; encryptionKey?: Buffer }> {
 	console.log("Initializing cryptocode session...");
 	console.log(`  U→A seed: ${userSeedUrl}`);
 	console.log(`  A→U seed: ${agentSeedUrl}`);
+
+	// ECDH handshake
+	let encryptionKey: Buffer | undefined;
+	if (handshakeKey) {
+		console.log("Performing ECDH handshake...");
+		encryptionKey = deriveSharedKey(
+			handshakeKey.localPrivateKey,
+			handshakeKey.remotePublicKey,
+		);
+		console.log("  Shared secret derived.");
+	}
 
 	console.log("Fetching U→A pad material...");
 	const uaPad = await PadManager.fromSeed(userSeedUrl, CONFIG.defaultLowWaterMark);
@@ -34,22 +55,47 @@ export async function initSession(
 		createdAt: new Date().toISOString(),
 	};
 
-	saveSession(state);
-	console.log(`Session saved to ${CONFIG.sessionFile}`);
+	// Encrypt session state at rest if we have a key
+	if (encryptionKey) {
+		const encrypted = encryptSessionState(state, encryptionKey);
+		const encPath = path.join(getConfigDir(), "session.enc");
+		fs.writeFileSync(encPath, encrypted);
+		console.log(`Encrypted session saved to ${encPath}`);
+	} else {
+		saveSession(state);
+		console.log(`Session saved to ${CONFIG.sessionFile}`);
+	}
 
-	return { channel, state };
+	return { channel, state, encryptionKey };
 }
 
 /**
  * Restore a session from persisted state.
  * Re-fetches the pad material from the current URLs.
  */
-export async function restoreSession(): Promise<{
+export async function restoreSession(
+	encryptionKey?: Buffer,
+): Promise<{
 	channel: DualChannel;
 	state: SessionState;
 }> {
-	const { loadSession } = await import("@cryptocode/otp-core");
-	const state = loadSession();
+	const { loadSession, sessionExists, getConfigDir } = await import("@cryptocode/otp-core");
+	let state: SessionState;
+
+	if (encryptionKey) {
+		// Load encrypted session
+		const encPath = path.join(getConfigDir(), "session.enc");
+		if (!fs.existsSync(encPath)) {
+			throw new Error(`No encrypted session found at ${encPath}`);
+		}
+		const encrypted = fs.readFileSync(encPath);
+		state = decryptSessionState(encrypted, encryptionKey);
+		console.log("Encrypted session decrypted.");
+	} else if (sessionExists()) {
+		state = loadSession();
+	} else {
+		throw new Error("No session found. Run 'cryptocode init' first.");
+	}
 
 	console.log("Restoring session...");
 	console.log(`  Created: ${state.createdAt}`);
@@ -63,7 +109,6 @@ export async function restoreSession(): Promise<{
 		uaState.lowWaterMark,
 	);
 	await uaPad.appendFromUrl(uaState.currentUrl);
-	// Advance to saved position
 	if (uaState.position > 0) {
 		await uaPad.advance(uaState.position);
 	}
@@ -85,4 +130,18 @@ export async function restoreSession(): Promise<{
 	console.log("Session restored.");
 
 	return { channel, state };
+}
+
+/**
+ * Generate ECDH keypair for handshake. Returns hex-encoded keys.
+ */
+export function generateHandshakeKeys(): {
+	publicKeyHex: string;
+	privateKeyHex: string;
+} {
+	return generateKeyPairHex();
+}
+
+function getConfigDir(): string {
+	return CONFIG.configDir;
 }

@@ -8,6 +8,7 @@ describe("pad-chain", () => {
 	describe("encodeMessage / decodeMessage", () => {
 		it("should roundtrip a simple message without nextUrl", () => {
 			const encoded = chain.encodeMessage("delete file foo.txt");
+			assert.ok(chain.validateMessage(encoded));
 			const decoded = chain.decodeMessage(encoded);
 
 			assert.strictEqual(decoded.instruction, "delete file foo.txt");
@@ -19,6 +20,7 @@ describe("pad-chain", () => {
 				"delete file foo.txt",
 				"https://en.wikipedia.org/wiki/Foobar",
 			);
+			assert.ok(chain.validateMessage(encoded));
 			const decoded = chain.decodeMessage(encoded);
 
 			assert.strictEqual(decoded.instruction, "delete file foo.txt");
@@ -30,6 +32,7 @@ describe("pad-chain", () => {
 				"删除文件 foo.txt",
 				"https://en.wikipedia.org/wiki/中文",
 			);
+			assert.ok(chain.validateMessage(encoded));
 			const decoded = chain.decodeMessage(encoded);
 
 			assert.strictEqual(decoded.instruction, "删除文件 foo.txt");
@@ -38,6 +41,7 @@ describe("pad-chain", () => {
 
 		it("should handle empty instruction", () => {
 			const encoded = chain.encodeMessage("");
+			assert.ok(chain.validateMessage(encoded));
 			const decoded = chain.decodeMessage(encoded);
 			assert.strictEqual(decoded.instruction, "");
 			assert.strictEqual(decoded.nextUrl, undefined);
@@ -49,7 +53,17 @@ describe("pad-chain", () => {
 			const encodedWithout = chain.encodeMessage(msg);
 
 			assert.ok(encodedWith.length > encodedWithout.length);
-			assert.strictEqual(encodedWithout.length, msg.length);
+		});
+
+		it("should produce output starting with version byte", () => {
+			const encoded = chain.encodeMessage("test");
+			assert.strictEqual(encoded[0], 0x01);
+		});
+
+		it("should fail validation for corrupted data", () => {
+			const encoded = chain.encodeMessage("test");
+			encoded[0] = 0x99; // corrupt version
+			assert.strictEqual(chain.validateMessage(encoded), false);
 		});
 	});
 });

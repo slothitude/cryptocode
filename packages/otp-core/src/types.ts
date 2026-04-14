@@ -1,6 +1,6 @@
 /** Result of attempting to decrypt a message. */
 export interface DecryptedResult {
-	/** Whether the ciphertext decrypted to valid UTF-8 with correct format. */
+	/** Whether the ciphertext decrypted to valid envelope format. */
 	authenticated: boolean;
 	/** The recovered instruction (empty string if unauthenticated). */
 	instruction: string;
@@ -8,6 +8,25 @@ export interface DecryptedResult {
 	nextUrl?: string;
 	/** Raw decrypted bytes (for diagnostics in audit mode). */
 	raw: Buffer;
+	/** If a desync was detected, contains the desync details. */
+	dsync?: DesyncInfo;
+}
+
+/** Details about a detected pad position desync. */
+export interface DesyncInfo {
+	/** Sequence number the sender used. */
+	senderSeq: number;
+	/** Sequence number the receiver expected. */
+	receiverSeq: number;
+	/** Pad position the sender was at when encrypting. */
+	senderPosition: number;
+	/** Pad position the receiver was at when attempting decrypt. */
+	receiverPosition: number;
+	/**
+	 * The recovery URL: the last URL that was successfully embedded
+	 * in a decrypted message. Both sides re-fetch this URL on wobbly.
+	 */
+	recoveryUrl: string;
 }
 
 /** An encrypted message traveling over a channel. */
@@ -18,6 +37,8 @@ export interface EncryptedMessage {
 	padBytesUsed: number;
 	/** Position in the pad when this message was encrypted. */
 	padPosition: number;
+	/** Monotonically increasing sequence number for desync detection. */
+	sequence: number;
 }
 
 /** Persistent state for a single channel's pad chain. */
@@ -32,6 +53,13 @@ export interface ChannelState {
 	bufferHash: string;
 	/** Pad refill threshold in bytes. */
 	lowWaterMark: number;
+	/** Current sequence number for this channel. */
+	sequence: number;
+	/**
+	 * The last URL that was successfully embedded in a decrypted message.
+	 * Used as the wobbly recovery anchor — both sides re-fetch this URL.
+	 */
+	lastSuccessfulUrl: string;
 }
 
 /** Full session state persisted to disk. */
@@ -46,3 +74,6 @@ export interface SessionState {
 
 /** Security modes for handling unauthenticated messages. */
 export type SecurityMode = "strict" | "lenient" | "audit";
+
+/** Reason why a message was rejected. */
+export type RejectionReason = "desync" | "injection" | "malformed";
